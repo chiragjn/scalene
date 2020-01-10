@@ -17,6 +17,7 @@
          LD_PRELOAD=$PWD/libcheaper.dylib PYTHONMALLOC=malloc python -m scalene test/testme.py
 
 """
+import contextlib
 
 the_globals = {
     '__name__': '__main__',
@@ -30,19 +31,17 @@ the_globals = {
     '__cached__': None,
 }
 
-import sys
+import platform
 import atexit
-import signal
-import json
-import linecache
-import math
-from collections import defaultdict
-import time
-from pathlib import Path
 import os
+import signal
+import sys
+import time
 import traceback
+from collections import defaultdict
 
 assert sys.version_info[0] == 3 and sys.version_info[1] >= 6, "This tool requires Python version 3.6 or above."
+
 
 class scalene(object):
 
@@ -65,12 +64,13 @@ class scalene(object):
     def gettime():
         return time.process_time() # time.perf_counter()
     
-    def __init__(self, program_being_profiled):
+    def __init__(self, program_being_profiled=None):
         # Register the exit handler to run when the program terminates or we quit.
         atexit.register(scalene.exit_handler)
-        # Store relevant names (program, path).
-        scalene.program_being_profiled = os.path.abspath(program_being_profiled)
-        scalene.program_path = os.path.dirname(scalene.program_being_profiled)
+        if program_being_profiled:
+            # Store relevant names (program, path).
+            scalene.program_being_profiled = os.path.abspath(program_being_profiled)
+            scalene.program_path = os.path.dirname(scalene.program_being_profiled)
         # Set up the signal handler to handle periodic timer interrupts (for CPU).
         signal.signal(signal.SIGPROF, self.cpu_signal_handler)
         # Set up the signal handler to handle malloc interrupts (for memory allocations).
@@ -80,7 +80,6 @@ class scalene(object):
         signal.setitimer(signal.ITIMER_PROF, self.signal_interval, self.signal_interval)
         scalene.last_signal_time = scalene.gettime()
 
-   
     @staticmethod
     def cpu_signal_handler(sig, frame):
         """Handle interrupts for CPU profiling."""
@@ -126,7 +125,7 @@ class scalene(object):
         """Return true if the filename is one we should trace."""
         # Profile anything in the program's directory or a child directory,
         # but nothing else.
-        if filename[0] == '<':
+        if filename[0] == '<' or'site-packages' in filename or '/usr/lib/python3' in filename:
             # Don't profile Python internals.
             return False
         if 'scalene.py' in filename:
@@ -185,7 +184,6 @@ class scalene(object):
                     line_no += 1
                 print("")
 
-
     @staticmethod
     def disable_signals():
         # Turn off the profiling signals.
@@ -193,7 +191,7 @@ class scalene(object):
         signal.signal(signal.SIGVTALRM, signal.SIG_IGN)
         signal.signal(signal.SIGXCPU, signal.SIG_IGN)
         signal.setitimer(signal.ITIMER_PROF, 0)
-        
+
     @staticmethod
     def exit_handler():
         scalene.disable_signals()
@@ -235,5 +233,51 @@ class scalene(object):
                     print(traceback.format_exc())
         except (FileNotFoundError, IOError):
             print("scalene: could not find input file.")
-    
-scalene.main()
+
+
+@contextlib.contextmanager
+def env_setup(memory=False, libscalene_path=None):
+    """
+         for CPU and memory profiling (Mac OS X)
+         DYLD_INSERT_LIBRARIES=$PWD/libcheaper.dylib PYTHONMALLOC=malloc python -m scalene test/testme.py
+         # for CPU and memory profiling (Linux)
+         LD_PRELOAD=$PWD/libcheaper.dylib PYTHONMALLOC=malloc python -m scalene test/testme.py
+    """
+    if memory:
+        if not libscalene_path:
+            raise ValueError('`libscalene_path` must be provided when `memory=True`')
+        ld_key = 'DYLD_INSERT_LIBRARIES' if platform.system() == 'Darwin' else 'LD_PRELOAD'
+        keys = {
+            ld_key: libscalene_path,
+            'PYTHONMALLOC': 'malloc',
+        }
+        old_values = {}
+        for key, value in keys.items():
+            old_values[key] = os.environ.get(key, None)
+            os.environ[key] = value
+        yield
+        for key, old_value in old_values.items():
+            if old_value is None:
+                del os.environ[key]
+            else:
+                os.environ[key] = old_value
+    else:
+        yield
+
+
+@contextlib.contextmanager
+def scalene_profiler(memory=False, libscalene_path=None):
+    with env_setup(memory=memory, libscalene_path=libscalene_path):
+        profiler = scalene()
+        profiler.start()
+        yield
+        profiler.stop()
+        if profiler.total_cpu_samples > 0:
+            profiler.output_profiles()
+            pass
+        else:
+            print("scalene: Program did not run for long enough to profile.")
+
+
+if __name__ == '__main__':
+    scalene.main()
