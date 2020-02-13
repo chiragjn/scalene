@@ -14,61 +14,67 @@
 
 #include "repoman.hpp"
 
+#include <stdio.h>
+#include <execinfo.h>
+#include <signal.h>
+#include <stdlib.h>
+#include <unistd.h>
+
+
 class TheCustomHeap;
 static TheCustomHeap * theCustomHeap = nullptr;
 
-const auto SamplingRate = 64 * 1024;
+// We use prime numbers here (near 1MB, for example) to avoid the risk
+// of stride behavior interfering with sampling.
+
+const auto MallocSamplingRate = 1048583; // 33554467; // 16777259; // 1048583; // 1 * 1024 * 1024;
+const auto FreeSamplingRate   = 1048589; // 16777289; // 1048589; // 1 * 1024 * 1024;
+//const auto MallocSamplingRate = 16777259; // 1048583; // 1 * 1024 * 1024;
+//const auto FreeSamplingRate   = 16777289; // 1048589; // 1 * 1024 * 1024;
 const auto RepoSize = 4096;
 
-// typedef RepoMan<RepoSize> CustomHeapType;
-typedef SampleHeap<SamplingRate, RepoMan<RepoSize>> CustomHeapType;
+typedef SampleHeap<MallocSamplingRate, FreeSamplingRate, RepoMan<RepoSize>> CustomHeapType;
 
-class TheCustomHeap : public CustomHeapType { // HL::SizeHeap<CheapHeap<256UL * 1048576UL>>> {
+class TheCustomHeap : public CustomHeapType {
   typedef CustomHeapType Super;
 public:
-  TheCustomHeap() {
+  TheCustomHeap()
+  {
     theCustomHeap = this;
   }
-  inline void * malloc(size_t sz) {
-    //    tprintf::tprintf("sz requested = @\n", sz);
-    auto ptr = Super::malloc(sz);
-    //        tprintf::tprintf("malloc @ = @\n", sz, ptr);
-    return ptr;
-  }
-  inline void free(void * ptr) {
-    //    tprintf::tprintf("free @\n", ptr);
-    Super::free(ptr);
-  }
 };
+
 
 TheCustomHeap& getTheCustomHeap() {
   static TheCustomHeap thang;
   return thang;
 }
 
-extern "C" void * xxmalloc(size_t sz) {
+extern "C" ATTRIBUTE_EXPORT void * xxmalloc(size_t sz) {
+  void * ptr = nullptr;
   if (theCustomHeap) {
-    return theCustomHeap->malloc(sz);
+    ptr = theCustomHeap->malloc(sz);
   } else {
-    return getTheCustomHeap().malloc(sz);
+    ptr = getTheCustomHeap().malloc(sz);
   }
+  return ptr;
 }
 
-extern "C" void xxfree(void * ptr) {
+extern "C" ATTRIBUTE_EXPORT void xxfree(void * ptr) {
   theCustomHeap->free(ptr);
 }
 
-extern "C" void xxfree_sized(void * ptr, size_t sz) {
+extern "C" ATTRIBUTE_EXPORT void xxfree_sized(void * ptr, size_t sz) {
   // TODO FIXME maybe make a sized-free version?
   getTheCustomHeap().free(ptr);
 }
 
-extern "C" size_t xxmalloc_usable_size(void * ptr) {
+extern "C" ATTRIBUTE_EXPORT size_t xxmalloc_usable_size(void * ptr) {
   return theCustomHeap->getSize(ptr); // TODO FIXME adjust for ptr offset?
 }
 
-extern "C" void xxmalloc_lock() {
+extern "C" ATTRIBUTE_EXPORT void xxmalloc_lock() {
 }
 
-extern "C" void xxmalloc_unlock() {
+extern "C" ATTRIBUTE_EXPORT void xxmalloc_unlock() {
 }
